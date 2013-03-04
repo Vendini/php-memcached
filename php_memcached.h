@@ -74,6 +74,7 @@ ZEND_BEGIN_MODULE_GLOBALS(php_memcached)
 	int   sess_number_of_replicas;
 	zend_bool sess_randomize_replica_read;
 	zend_bool sess_remove_failed_enabled;
+	long  sess_connect_timeout;
 	zend_bool sess_consistent_hash_enabled;
 	zend_bool sess_binary_enabled;
 #endif

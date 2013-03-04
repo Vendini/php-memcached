@@ -302,6 +302,7 @@ PHP_INI_BEGIN()
 	STD_PHP_INI_ENTRY("memcached.sess_number_of_replicas",	"0",	PHP_INI_ALL, OnUpdateLongGEZero,	sess_number_of_replicas,	zend_php_memcached_globals,	php_memcached_globals)
 	STD_PHP_INI_ENTRY("memcached.sess_randomize_replica_read",	"0",	PHP_INI_ALL, OnUpdateBool,	sess_randomize_replica_read,	zend_php_memcached_globals,	php_memcached_globals)
 	STD_PHP_INI_ENTRY("memcached.sess_remove_failed",	"0",		PHP_INI_ALL, OnUpdateBool,              sess_remove_failed_enabled,	zend_php_memcached_globals,     php_memcached_globals)
+	STD_PHP_INI_ENTRY("memcached.sess_connect_timeout",     "1000",         PHP_INI_ALL, OnUpdateLong, 		sess_connect_timeout,           zend_php_memcached_globals,     php_memcached_globals)
 #endif
 	STD_PHP_INI_ENTRY("memcached.compression_type",		"fastlz",	PHP_INI_ALL, OnUpdateCompressionType, compression_type,		zend_php_memcached_globals,	php_memcached_globals)
 	STD_PHP_INI_ENTRY("memcached.compression_factor",	"1.3",		PHP_INI_ALL, OnUpdateReal, compression_factor,		zend_php_memcached_globals,	php_memcached_globals)
@@ -1973,7 +1974,7 @@ PHP_METHOD(Memcached, getServerByKey)
 {
 	char *server_key;
 	int   server_key_len;
-	memcached_server_st *server;
+	memcached_server_instance_st *server_instance;
 	memcached_return error;
 	MEMC_METHOD_INIT_VARS;
 
@@ -1989,16 +1990,16 @@ PHP_METHOD(Memcached, getServerByKey)
 		RETURN_FALSE;
 	}
 
-	server = memcached_server_by_key(m_obj->memc, server_key, server_key_len, &error);
-	if (server == NULL) {
+	server_instance = memcached_server_by_key(m_obj->memc, server_key, server_key_len, &error);
+	if (server_instance == NULL) {
 		php_memc_handle_error(i_obj, error TSRMLS_CC);
 		RETURN_FALSE;
 	}
 
 	array_init(return_value);
-	add_assoc_string(return_value, "host", server->hostname, 1);
-	add_assoc_long(return_value, "port", server->port);
-	add_assoc_long(return_value, "weight", server->weight);
+	add_assoc_string(return_value, "host", (char*) memcached_server_name(server_instance), 1);
+	add_assoc_long(return_value, "port", memcached_server_port(server_instance));
+	add_assoc_long(return_value, "weight", 0);
 }
 /* }}} */
 
@@ -2033,6 +2034,81 @@ PHP_METHOD(Memcached, quit)
 
     memcached_quit(m_obj->memc);
     RETURN_TRUE;
+}
+/* }}} */
+
+#if defined(LIBMEMCACHED_VERSION_HEX) && LIBMEMCACHED_VERSION_HEX >= 0x00049000
+/* {{{ Memcached::getLastErrorMessage()
+   Returns the last error message that occurred */
+PHP_METHOD(Memcached, getLastErrorMessage)
+{
+	MEMC_METHOD_INIT_VARS;
+
+	if (zend_parse_parameters_none() == FAILURE) {
+		return;
+	}
+
+	MEMC_METHOD_FETCH_OBJECT;
+
+	RETURN_STRING(memcached_last_error_message(m_obj->memc), 1);
+}
+/* }}} */
+
+/* {{{ Memcached::getLastErrorCode()
+   Returns the last error code that occurred */
+PHP_METHOD(Memcached, getLastErrorCode)
+{
+	MEMC_METHOD_INIT_VARS;
+
+	if (zend_parse_parameters_none() == FAILURE) {
+		return;
+	}
+
+	MEMC_METHOD_FETCH_OBJECT;
+
+	RETURN_LONG(memcached_last_error(m_obj->memc));
+}
+/* }}} */
+
+/* {{{ Memcached::getLastErrorErrno()
+   Returns the last error errno that occurred */
+PHP_METHOD(Memcached, getLastErrorErrno)
+{
+	MEMC_METHOD_INIT_VARS;
+
+	if (zend_parse_parameters_none() == FAILURE) {
+		return;
+	}
+
+	MEMC_METHOD_FETCH_OBJECT;
+
+	RETURN_LONG(memcached_last_error_errno(m_obj->memc));
+}
+/* }}} */
+#endif
+
+/* {{{ Memcached::getLastDisconnectedServer()
+   Returns the last disconnected server
+   Was added in 0.34 according to libmemcached's Changelog */
+PHP_METHOD(Memcached, getLastDisconnectedServer)
+{
+	memcached_server_instance_st *server_instance;
+	MEMC_METHOD_INIT_VARS;
+
+	if (zend_parse_parameters_none() == FAILURE) {
+		return;
+	}
+
+	MEMC_METHOD_FETCH_OBJECT;
+
+	server_instance = memcached_server_get_last_disconnect(m_obj->memc);
+	if (server_instance == NULL) {
+		RETURN_FALSE;
+	}
+
+	array_init(return_value);
+	add_assoc_string(return_value, "host", (char*) memcached_server_name(server_instance), 1);
+	add_assoc_long(return_value, "port", memcached_server_port(server_instance));
 }
 /* }}} */
 
@@ -2606,7 +2682,7 @@ static memcached_return php_memc_do_serverlist_callback(const memcached_st *ptr,
 
 	MAKE_STD_ZVAL(array);
 	array_init(array);
-	add_assoc_string(array, "host", memcached_server_name(instance), 1);
+	add_assoc_string(array, "host", (char*) memcached_server_name(instance), 1);
 	add_assoc_long(array, "port", memcached_server_port(instance));
 	/*
 	 * API does not allow to get at this field.
@@ -3092,8 +3168,8 @@ static void php_memc_init_globals(zend_php_memcached_globals *php_memcached_glob
 	MEMC_G(sess_locked) = 0;
 	MEMC_G(sess_lock_key) = NULL;
 	MEMC_G(sess_lock_key_len) = 0;
-	MEMC_G(sess_number_of_replicas) = 0;
 	MEMC_G(sess_randomize_replica_read) = 0;
+	MEMC_G(sess_connect_timeout) = 1000;
 #endif
 	MEMC_G(serializer_name) = NULL;
 	MEMC_G(serializer) = SERIALIZER_DEFAULT;
@@ -3528,6 +3604,18 @@ ZEND_BEGIN_ARG_INFO(arginfo_getServerByKey, 0)
 	ZEND_ARG_INFO(0, server_key)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_INFO(arginfo_getLastErrorMessage, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO(arginfo_getLastErrorCode, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO(arginfo_getLastErrorErrno, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO(arginfo_getLastDisconnectedServer, 0)
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_INFO(arginfo_getOption, 0)
 	ZEND_ARG_INFO(0, option)
 ZEND_END_ARG_INFO()
@@ -3614,6 +3702,13 @@ static zend_function_entry memcached_class_methods[] = {
 	MEMC_ME(getServerByKey,     arginfo_getServerByKey)
     MEMC_ME(resetServerList,    arginfo_resetServerList)
     MEMC_ME(quit,               arginfo_quit)
+
+#if defined(LIBMEMCACHED_VERSION_HEX) && LIBMEMCACHED_VERSION_HEX >= 0x00049000
+	MEMC_ME(getLastErrorMessage,		arginfo_getLastErrorMessage)
+	MEMC_ME(getLastErrorCode,		arginfo_getLastErrorCode)
+	MEMC_ME(getLastErrorErrno,		arginfo_getLastErrorErrno)
+#endif
+	MEMC_ME(getLastDisconnectedServer,	arginfo_getLastDisconnectedServer)
 
 	MEMC_ME(getStats,           arginfo_getStats)
 	MEMC_ME(getVersion,         arginfo_getVersion)
@@ -3765,6 +3860,9 @@ static void php_memc_register_constants(INIT_FUNC_ARGS)
 	REGISTER_MEMC_CLASS_CONST_LONG(OPT_SOCKET_RECV_SIZE, MEMCACHED_BEHAVIOR_SOCKET_RECV_SIZE);
 	REGISTER_MEMC_CLASS_CONST_LONG(OPT_CONNECT_TIMEOUT, MEMCACHED_BEHAVIOR_CONNECT_TIMEOUT);
 	REGISTER_MEMC_CLASS_CONST_LONG(OPT_RETRY_TIMEOUT, MEMCACHED_BEHAVIOR_RETRY_TIMEOUT);
+#if defined(LIBMEMCACHED_VERSION_HEX) && LIBMEMCACHED_VERSION_HEX >= 0x01000003
+	REGISTER_MEMC_CLASS_CONST_LONG(OPT_DEAD_TIMEOUT, MEMCACHED_BEHAVIOR_DEAD_TIMEOUT);
+#endif
 	REGISTER_MEMC_CLASS_CONST_LONG(OPT_SEND_TIMEOUT, MEMCACHED_BEHAVIOR_SND_TIMEOUT);
 	REGISTER_MEMC_CLASS_CONST_LONG(OPT_RECV_TIMEOUT, MEMCACHED_BEHAVIOR_RCV_TIMEOUT);
 	REGISTER_MEMC_CLASS_CONST_LONG(OPT_POLL_TIMEOUT, MEMCACHED_BEHAVIOR_POLL_TIMEOUT);
